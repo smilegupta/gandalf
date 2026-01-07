@@ -5,6 +5,10 @@ process.stdin.on("data", (d) => {
 });
 
 process.stdin.on("end", () => {
-  process.stdout.write(input)
+  if (input.length > 0) {
+    process.stdout.write(input);
+    process.exit(1);
+  }
+
   process.exit(0);
 });
