@@ -1,5 +1,7 @@
 "use strict";
 
+const { extractDiffMetadata } = require("./diffMetadata");
+
 const MAX_DIFF_BYTES = 50_000;
 
 let input = "";
@@ -34,7 +36,8 @@ process.stdin.on("end", () => {
     process.exit(1);
   }
 
-  process.stdout.write(input);
+  const metadata = extractDiffMetadata(input);
+  process.stdout.write(JSON.stringify(metadata, null, 2));
   process.exit(0);
 });
 
