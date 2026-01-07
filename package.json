@@ -1,0 +1,17 @@
+{
+  "name": "gandalf",
+  "version": "1.0.0",
+  "description": "Git diff metadata extractor",
+  "main": "gitgandalf.js",
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "lint:fix": "eslint --fix ."
+  },
+  "devDependencies": {
+    "prettier": "^3.2.4",
+    "eslint": "^8.56.0",
+    "eslint-config-prettier": "^9.1.0"
+  }
+}
