@@ -158,7 +158,7 @@ process.stdin.on("end", async () => {
     } else if (review.risk === "MEDIUM") {
       log("⚠️  Ok, but check the review.");
     } else {
-      log("🚨 You shall not pass! Fix the issues first.");
+      log("🚨 Blocked. Fix the issues first.");
       process.exit(1);
     }
 

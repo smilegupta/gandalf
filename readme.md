@@ -73,7 +73,7 @@ Gandalf will review and respond:
 
 - `✅ Ship it!` → LOW risk, commit proceeds
 - `⚠️  Ok, but check the review.` → MEDIUM risk, commit proceeds
-- `🚨 You shall not pass!` → HIGH risk, commit blocked
+- `🚨 Blocked.` → HIGH risk, commit blocked
 
 Review details saved to `.gandalf-review.json`.
 
@@ -107,15 +107,15 @@ Configure skip patterns in `.gandalfrc.json`:
 
 ### 💬 Commit Message Review
 
-Gandalf also reviews your commit message:
+Also reviews your commit message:
 
 ```
 🧙 Gandalf reviewed your code → .gandalf-review.json
-💬 "fix stuff" lacks clarity, young hobbit. Describe what you fixed!
+💬 Typo: "chors" → "chores". Be specific about what changed.
 ✅ Ship it!
 ```
 
-Good messages: descriptive, explains what and why.
-Bad messages: vague (`fix`, `update`, `wip`), too short, no context.
+Good: descriptive, explains what and why.
+Bad: vague (`fix`, `update`, `wip`), typos, too short.
 
 ---
