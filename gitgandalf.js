@@ -26,6 +26,7 @@ process.stdin.on("end", async () => {
   if (input.trim().length === 0) {
     process.stderr.write("GitGandalf: empty diff - nothing to review.\n");
     process.exit(0);
+    return;
   }
 
   // Size cap -> reject
@@ -35,6 +36,7 @@ process.stdin.on("end", async () => {
       `GitGandalf: diff too large (${size} bytes). Max allowed is ${MAX_DIFF_BYTES} bytes. Please split the change.\n`
     );
     process.exit(1);
+    return;
   }
 
   const metadata = extractDiffMetadata(input);
@@ -64,17 +66,15 @@ process.stdin.on("end", async () => {
       return;
     }
 
-    // Print review (or metadata - your choice; for now print review)
     process.stdout.write(reviewText + "\n");
     process.exit(0);
+    return;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`GitGandalf: LLM review failed - ${msg}\n`);
     process.exit(1);
+    return;
   }
-
-  // process.stdout.write(JSON.stringify(metadata, null, 2));
-  // process.exit(0);
 });
 
 process.stdin.resume();
@@ -89,11 +89,11 @@ function runLocalLLM(prompt) {
     let error = "";
 
     child.stdout.on("data", (chunk) => {
-      output += chunk;
+      output += chunk.toString();
     });
 
     child.stderr.on("data", (chunk) => {
-      error += chunk;
+      error += chunk.toString();
     });
 
     child.on("error", (err) => {
@@ -102,9 +102,12 @@ function runLocalLLM(prompt) {
 
     child.on("close", (code) => {
       if (code !== 0) {
-        return reject(new Error(`Local LLM process exited with code ${code}`));
+        // include stderr to debug model/server issues
+        return reject(
+          new Error(`Local LLM exited with code ${code}. ${error.trim()}`)
+        );
       }
-      resolve(output);
+      resolve(output.trimEnd());
     });
 
     child.stdin.write(prompt);
