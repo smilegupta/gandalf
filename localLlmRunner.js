@@ -1,7 +1,7 @@
 // configs
 const BASE_URL = "http://127.0.0.1:1234/v1";
 const MODEL = "qwen/qwen3-4b-thinking-2507";
-const TIMEOUT_MS = 120000; // 2 minutes - LLM inference can be slow
+const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes 
 
 // exit codes for the script
 const EXIT_OK = 0;
