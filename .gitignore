@@ -19,3 +19,6 @@ Thumbs.db
 dist/
 build/
 
+# Gandalf review output
+.gandalf-review.json
+

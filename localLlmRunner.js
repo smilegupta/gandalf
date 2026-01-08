@@ -54,13 +54,14 @@ process.stdin.on("end", async () => {
     });
 
     if (!res.ok) {
+      const body = await res.text().catch(() => "");
       throw new Error(
-        `LocalLlmRunner: failed to get response from ${BASE_URL}/chat/completions: ${res.status} ${res.statusText}`
+        `LocalLlmRunner: ${res.status} ${res.statusText}${body ? ` - ${body}` : ""}`
       );
     }
 
     const data = await res.json();
-    const output = data?.choices[0]?.message?.content;
+    const output = data?.choices?.[0]?.message?.content;
 
     if (typeof output !== "string") {
       throw new Error("LocalLlmRunner: unexpected response format");
@@ -76,13 +77,9 @@ process.stdin.on("end", async () => {
     if (err.name === "AbortError") {
       process.stderr.write("LocalLlmRunner: request timed out.\n");
       process.exit(EXIT_WARN_TIMEOUT);
-      return;
     } else {
-      process.stderr.write(
-        `LocalLlmRunner: failed to run the model - ${err.message}\n`
-      );
+      process.stderr.write(`${err.message}\n`);
       process.exit(EXIT_FAIL);
-      return;
     }
   } finally {
     clearTimeout(timeoutId);

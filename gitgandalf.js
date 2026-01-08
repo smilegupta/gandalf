@@ -7,9 +7,12 @@ const { extractDiffMetadata } = require("./diffMetadata");
 const { buildJudgePromptV1 } = require("./judgePrompt.v1");
 
 const MAX_DIFF_BYTES = 50_000;
-const REVIEW_OUTPUT_FILE = ".gandalf-review.json";
+const REVIEW_FILE = ".gandalf-review.json";
 
-// Spinner for visual feedback while thinking
+// Detect interactive terminal vs CI
+const isTTY = process.stderr.isTTY;
+
+// Spinner with rotating messages
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const THINKING_MESSAGES = [
   "🧙 Gandalf is reviewing your code...",
@@ -19,7 +22,9 @@ const THINKING_MESSAGES = [
   "✨ Consulting the ancient scrolls...",
 ];
 
-function createSpinner(message) {
+function createSpinner() {
+  if (!isTTY) return { stop: () => {} };
+
   let frameIdx = 0;
   let msgIdx = 0;
   let elapsed = 0;
@@ -38,112 +43,76 @@ function createSpinner(message) {
     }
   }, 1000);
 
-  // Show initial message immediately
-  process.stderr.write(`${SPINNER_FRAMES[0]} ${message}`);
+  process.stderr.write(`${SPINNER_FRAMES[0]} ${THINKING_MESSAGES[0]}`);
 
   return {
-    stop: (finalMessage) => {
+    stop: (msg) => {
       clearInterval(interval);
-      process.stderr.write(`\r\x1b[K${finalMessage}\n`);
+      process.stderr.write(`\r\x1b[K${msg}\n`);
     },
   };
 }
 
+function log(msg) {
+  process.stderr.write(msg + "\n");
+}
+
 let input = "";
 
-// Fail closed on stream errors
 process.stdin.on("error", (err) => {
-  const msg = err instanceof Error ? err.message : String(err);
-  process.stderr.write(`GitGandalf: failed to read diff from STDIN - ${msg}\n`);
+  log(`error: failed to read diff - ${err.message}`);
   process.exit(1);
 });
 
-process.stdin.on("data", (chunk) => {
-  input += chunk;
-});
+process.stdin.on("data", (chunk) => (input += chunk));
 
 process.stdin.on("end", async () => {
-  // Normalize line endings: CRLF/CR -> LF
   input = input.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
-  // Empty diff -> error + exit 0
-  if (input.trim().length === 0) {
-    process.stderr.write("GitGandalf: empty diff - nothing to review.\n");
+  if (!input.trim()) {
+    log("nothing to review");
     process.exit(0);
-    return;
   }
 
-  // Size cap -> reject
   const size = Buffer.byteLength(input, "utf8");
   if (size > MAX_DIFF_BYTES) {
-    process.stderr.write(
-      `GitGandalf: diff too large (${size} bytes). Max allowed is ${MAX_DIFF_BYTES} bytes. Please split the change.\n`
-    );
+    log(`diff too large (${size}b > ${MAX_DIFF_BYTES}b) - split your commit`);
     process.exit(1);
-    return;
   }
 
   const metadata = extractDiffMetadata(input);
-
   const prompt = buildJudgePromptV1({
     metadataJson: JSON.stringify(metadata, null, 2),
     diffText: input,
   });
 
-  const spinner = createSpinner(THINKING_MESSAGES[0]);
+  const spinner = createSpinner();
 
   try {
-    const judgeRaw = await runLocalLLM(prompt);
+    const raw = await runLocalLLM(prompt);
+    const json = extractJson(raw);
+    const review = validate(JSON.parse(json));
 
-    const jsonText = extractFirstJsonObject(judgeRaw);
-    const judgeObj = JSON.parse(jsonText);
-    const validated = validateJudgeSchema(judgeObj);
-
-    // Build review output with timestamp
-    const reviewOutput = {
+    // Save full review
+    const output = {
       timestamp: new Date().toISOString(),
       files: metadata.files || [],
-      review: validated,
+      review,
     };
-
-    // Save to file
-    const outputPath = path.resolve(process.cwd(), REVIEW_OUTPUT_FILE);
-    fs.writeFileSync(outputPath, JSON.stringify(reviewOutput, null, 2) + "\n");
-
-    // Stop spinner with success
-    const riskEmoji = { LOW: "✅", MEDIUM: "⚠️", HIGH: "🚨" }[validated.risk];
-    spinner.stop(`${riskEmoji} Review complete! Risk: ${validated.risk}`);
-
-    // Pretty print the review
-    process.stderr.write("\n");
-    process.stderr.write("┌─────────────────────────────────────────┐\n");
-    process.stderr.write("│          🧙 GANDALF'S VERDICT           │\n");
-    process.stderr.write("└─────────────────────────────────────────┘\n");
-    process.stderr.write(`\n📊 Risk Level: ${riskEmoji} ${validated.risk}\n`);
-    process.stderr.write(`\n📝 Summary:\n   ${validated.summary}\n`);
-
-    if (validated.issues.length > 0) {
-      process.stderr.write(`\n⚠️  Issues Found:\n`);
-      validated.issues.forEach((issue, i) => {
-        process.stderr.write(`   ${i + 1}. ${issue}\n`);
-      });
-    } else {
-      process.stderr.write(`\n✨ No issues found!\n`);
-    }
-
-    process.stderr.write(
-      `\n📁 Full review saved to: ${REVIEW_OUTPUT_FILE}\n\n`
+    fs.writeFileSync(
+      path.resolve(process.cwd(), REVIEW_FILE),
+      JSON.stringify(output, null, 2) + "\n"
     );
 
-    // Also write JSON to stdout for piping
-    process.stdout.write(JSON.stringify(validated, null, 2) + "\n");
+    // Output - keep it clean, details in the file
+    const icon = { LOW: "✅", MEDIUM: "⚠️", HIGH: "🚨" }[review.risk];
+    spinner.stop(`${icon} ${review.risk} - see ${REVIEW_FILE}`);
+
     process.exit(0);
-    return;
   } catch (err) {
-    spinner.stop("❌ Review failed!");
-    process.stderr.write(`GitGandalf: judge output invalid - ${err.message}\n`);
+    spinner.stop("✗ failed");
+    log(err.message);
     process.exit(1);
-    return;
   }
 });
 
@@ -155,29 +124,15 @@ function runLocalLLM(prompt) {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    let output = "";
-    let error = "";
+    let out = "";
+    let err = "";
 
-    child.stdout.on("data", (chunk) => {
-      output += chunk.toString();
-    });
-
-    child.stderr.on("data", (chunk) => {
-      error += chunk.toString();
-    });
-
-    child.on("error", (err) => {
-      reject(new Error(`Failed to start local LLM: ${err.message}`));
-    });
-
+    child.stdout.on("data", (c) => (out += c));
+    child.stderr.on("data", (c) => (err += c));
+    child.on("error", (e) => reject(new Error(`spawn failed: ${e.message}`)));
     child.on("close", (code) => {
-      if (code !== 0) {
-        // include stderr to debug model/server issues
-        return reject(
-          new Error(`Local LLM exited with code ${code}. ${error.trim()}`)
-        );
-      }
-      resolve(output.trimEnd());
+      if (code !== 0) return reject(new Error(err.trim() || `exit ${code}`));
+      resolve(out.trimEnd());
     });
 
     child.stdin.write(prompt);
@@ -185,74 +140,65 @@ function runLocalLLM(prompt) {
   });
 }
 
-function extractFirstJsonObject(text) {
-  let content = String(text || "");
+function extractJson(text) {
+  let s = String(text || "");
 
-  // Strip thinking model output: <think>...</think> blocks
-  content = content.replace(/<think>[\s\S]*?<\/think>/gi, "");
+  // Strip <think>...</think> blocks
+  s = s.replace(/<think>[\s\S]*?<\/think>/gi, "");
 
-  // Find the first JSON object by matching balanced braces
-  const startIdx = content.indexOf("{");
-  if (startIdx === -1) {
-    throw new Error("No JSON object found in output");
-  }
+  // Strip markdown code fences
+  s = s.replace(/```json\s*/gi, "").replace(/```\s*/g, "");
 
-  let braceCount = 0;
-  let endIdx = -1;
+  // Find balanced JSON object (handles nested braces, ignores braces in strings)
+  const start = s.indexOf("{");
+  if (start === -1) throw new Error("no JSON found");
 
-  for (let i = startIdx; i < content.length; i++) {
-    if (content[i] === "{") braceCount++;
-    else if (content[i] === "}") braceCount--;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
 
-    if (braceCount === 0) {
-      endIdx = i;
-      break;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+
+    if (escape) {
+      escape = false;
+      continue;
     }
+    if (c === "\\") {
+      escape = true;
+      continue;
+    }
+    if (c === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+
+    if (c === "{") depth++;
+    else if (c === "}") depth--;
+
+    if (depth === 0) return s.slice(start, i + 1);
   }
 
-  if (endIdx === -1) {
-    throw new Error("Malformed JSON object - unbalanced braces");
-  }
-
-  return content.slice(startIdx, endIdx + 1);
+  throw new Error("malformed JSON");
 }
 
-function validateJudgeSchema(obj) {
-  const allowedKeys = ["risk", "issues", "summary"];
-  const keys = Object.keys(obj);
+function validate(obj) {
+  const required = ["risk", "issues", "summary"];
 
-  // no missing, no extra
-  if (keys.length !== allowedKeys.length) {
-    throw new Error("Judge output must contain exactly 3 fields");
-  }
-  for (const k of allowedKeys) {
-    if (!Object.prototype.hasOwnProperty.call(obj, k)) {
-      throw new Error(`Missing required field: ${k}`);
-    }
-  }
-  for (const k of keys) {
-    if (!allowedKeys.includes(k)) {
-      throw new Error(`Unexpected field: ${k}`);
-    }
+  for (const k of required) {
+    if (!(k in obj)) throw new Error(`missing: ${k}`);
   }
 
-  // risk enum
   if (!["LOW", "MEDIUM", "HIGH"].includes(obj.risk)) {
-    throw new Error("Invalid risk value");
+    throw new Error("invalid risk");
   }
-
-  // issues array of strings
-  if (
-    !Array.isArray(obj.issues) ||
-    obj.issues.some((x) => typeof x !== "string")
-  ) {
-    throw new Error("issues must be an array of strings");
+  if (!Array.isArray(obj.issues)) {
+    throw new Error("issues must be array");
   }
-
-  // summary string
   if (typeof obj.summary !== "string") {
-    throw new Error("summary must be a string");
+    throw new Error("summary must be string");
   }
 
-  return obj;
+  return { risk: obj.risk, issues: obj.issues, summary: obj.summary };
 }
