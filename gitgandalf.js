@@ -1,5 +1,6 @@
 "use strict";
 
+const { spawn } = require("child_process");
 const { extractDiffMetadata } = require("./diffMetadata");
 
 const MAX_DIFF_BYTES = 50_000;
@@ -17,7 +18,7 @@ process.stdin.on("data", (chunk) => {
   input += chunk;
 });
 
-process.stdin.on("end", () => {
+process.stdin.on("end", async () => {
   // Normalize line endings: CRLF/CR -> LF
   input = input.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
@@ -37,8 +38,76 @@ process.stdin.on("end", () => {
   }
 
   const metadata = extractDiffMetadata(input);
-  process.stdout.write(JSON.stringify(metadata, null, 2));
-  process.exit(0);
+
+  const prompt = [
+    "You are a senior engineer reviewing a git diff.",
+    "",
+    "Return a short review.",
+    "If the change should be blocked, include the word: BLOCK",
+    "Otherwise include the word: APPROVE",
+    "",
+    "Metadata (FYI):",
+    JSON.stringify(metadata, null, 2),
+    "",
+    "Diff:",
+    input,
+    "",
+  ].join("\n");
+
+  try {
+    const reviewText = await runLocalLLM(prompt);
+
+    if (reviewText.includes("BLOCK")) {
+      process.stderr.write("GitGandalf: commit blocked by LLM review.\n\n");
+      process.stderr.write(reviewText + "\n");
+      process.exit(1);
+      return;
+    }
+
+    // Print review (or metadata - your choice; for now print review)
+    process.stdout.write(reviewText + "\n");
+    process.exit(0);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`GitGandalf: LLM review failed - ${msg}\n`);
+    process.exit(1);
+  }
+
+  // process.stdout.write(JSON.stringify(metadata, null, 2));
+  // process.exit(0);
 });
 
 process.stdin.resume();
+
+function runLocalLLM(prompt) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("node", ["localLlmRunner.js"], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    let output = "";
+    let error = "";
+
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+    });
+
+    child.stderr.on("data", (chunk) => {
+      error += chunk;
+    });
+
+    child.on("error", (err) => {
+      reject(new Error(`Failed to start local LLM: ${err.message}`));
+    });
+
+    child.on("close", (code) => {
+      if (code !== 0) {
+        return reject(new Error(`Local LLM process exited with code ${code}`));
+      }
+      resolve(output);
+    });
+
+    child.stdin.write(prompt);
+    child.stdin.end();
+  });
+}
