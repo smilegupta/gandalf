@@ -41,6 +41,7 @@ function shouldSkipReview(files, skipPatterns) {
 
 // Detect interactive terminal vs CI
 const isTTY = process.stderr.isTTY;
+const isInteractive = isTTY && !process.env.CI;
 
 // Spinner with rotating messages
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -85,6 +86,77 @@ function createSpinner() {
 
 function log(msg) {
   process.stderr.write(msg + "\n");
+}
+
+// Interactive prompt for user input
+function askUser(question) {
+  return new Promise((resolve) => {
+    const readline = require("readline");
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stderr,
+    });
+
+    // Re-open stdin for reading (it was closed after diff input)
+    const tty = require("tty");
+    if (tty.isatty(0)) {
+      const fd = fs.openSync("/dev/tty", "r");
+      const ttyStream = new tty.ReadStream(fd);
+      rl.input = ttyStream;
+      rl.question(question, (answer) => {
+        ttyStream.close();
+        rl.close();
+        resolve(answer.trim().toLowerCase());
+      });
+    } else {
+      rl.close();
+      resolve("");
+    }
+  });
+}
+
+// Show interactive menu after review
+async function showInteractiveMenu(review, reviewFile) {
+  log("");
+  log("┌─────────────────────────────────────┐");
+  log("│  What would you like to do?         │");
+  log("├─────────────────────────────────────┤");
+  log("│  [p] Proceed with commit            │");
+  log("│  [a] Abort commit                   │");
+  log("│  [v] View full review               │");
+  log("└─────────────────────────────────────┘");
+
+  const answer = await askUser("\n> ");
+
+  switch (answer) {
+    case "p":
+      log("✅ Proceeding with commit...");
+      return true;
+
+    case "v":
+      log("");
+      log("─── Full Review ───");
+      log(`Risk: ${review.risk}`);
+      log(`Summary: ${review.summary}`);
+      if (review.issues.length > 0) {
+        log("Issues:");
+        review.issues.forEach((issue, i) => log(`  ${i + 1}. ${issue}`));
+      } else {
+        log("Issues: None");
+      }
+      if (review.messageReview) {
+        log(`Message feedback: ${review.messageReview}`);
+      }
+      log("───────────────────");
+      log("");
+      // After viewing, ask again
+      return showInteractiveMenu(review, reviewFile);
+
+    case "a":
+    default:
+      log("🛑 Commit aborted.");
+      return false;
+  }
 }
 
 // Get commit message from args (passed by pre-commit hook)
@@ -155,11 +227,25 @@ process.stdin.on("end", async () => {
 
     if (review.risk === "LOW") {
       log("✅ Ship it!");
+      process.exit(0);
     } else if (review.risk === "MEDIUM") {
-      log("⚠️  Ok, but check the review.");
+      log("⚠️  MEDIUM risk detected.");
+      if (isInteractive) {
+        const proceed = await showInteractiveMenu(review, REVIEW_FILE);
+        process.exit(proceed ? 0 : 1);
+      } else {
+        log("⚠️  Ok, but check the review.");
+        process.exit(0);
+      }
     } else {
-      log("🚨 Blocked. Fix the issues first.");
-      process.exit(1);
+      log("🚨 HIGH risk detected!");
+      if (isInteractive) {
+        const proceed = await showInteractiveMenu(review, REVIEW_FILE);
+        process.exit(proceed ? 0 : 1);
+      } else {
+        log("🚨 Blocked. Fix the issues first.");
+        process.exit(1);
+      }
     }
 
     process.exit(0);

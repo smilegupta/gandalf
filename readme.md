@@ -118,4 +118,30 @@ Also reviews your commit message:
 Good: descriptive, explains what and why.
 Bad: vague (`fix`, `update`, `wip`), typos, too short.
 
+### 🎮 Interactive Mode
+
+When MEDIUM or HIGH risk is detected in an interactive terminal, Gandalf asks what to do:
+
+```
+🧙 Gandalf reviewed your code → .gandalf-review.json
+💬 Consider adding more context to the commit message.
+⚠️  MEDIUM risk detected.
+
+┌─────────────────────────────────────┐
+│  What would you like to do?         │
+├─────────────────────────────────────┤
+│  [p] Proceed with commit            │
+│  [a] Abort commit                   │
+│  [v] View full review               │
+└─────────────────────────────────────┘
+
+>
+```
+
+- **[p] Proceed** – Continue with the commit anyway
+- **[a] Abort** – Cancel the commit
+- **[v] View** – Show full review details, then choose again
+
+In CI environments (`CI=true`), interactive mode is disabled and the original behavior applies.
+
 ---
