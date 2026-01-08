@@ -104,9 +104,16 @@ process.stdin.on("end", async () => {
       JSON.stringify(output, null, 2) + "\n"
     );
 
-    // Output - keep it clean, details in the file
-    const icon = { LOW: "✅", MEDIUM: "⚠️", HIGH: "🚨" }[review.risk];
-    spinner.stop(`${icon} ${review.risk} - see ${REVIEW_FILE}`);
+    spinner.stop(`🧙 Gandalf reviewed your code → ${REVIEW_FILE}`);
+
+    if (review.risk === "LOW") {
+      log("✅ Ship it!");
+    } else if (review.risk === "MEDIUM") {
+      log("⚠️  Ok, but check the review.");
+    } else {
+      log("🚨 You shall not pass! Fix the issues first.");
+      process.exit(1);
+    }
 
     process.exit(0);
   } catch (err) {
