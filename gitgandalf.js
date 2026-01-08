@@ -88,6 +88,63 @@ function log(msg) {
   process.stderr.write(msg + "\n");
 }
 
+// Classify errors into user-friendly messages
+function classifyError(err) {
+  const msg = (err.message || "").toLowerCase();
+
+  if (msg.includes("econnrefused") || msg.includes("fetch failed")) {
+    return {
+      type: "connection",
+      icon: "🔌",
+      title: "LLM server not running",
+      hint: "Start LM Studio at http://127.0.0.1:1234",
+    };
+  }
+
+  if (msg.includes("timeout") || msg.includes("abort")) {
+    return {
+      type: "timeout",
+      icon: "⏱️",
+      title: "LLM request timed out",
+      hint: "Model may be overloaded, try again",
+    };
+  }
+
+  if (msg.includes("no json") || msg.includes("malformed json")) {
+    return {
+      type: "parse",
+      icon: "📄",
+      title: "LLM returned invalid format",
+      hint: "Model didn't follow output contract",
+    };
+  }
+
+  if (msg.includes("invalid risk") || msg.includes("missing:")) {
+    return {
+      type: "schema",
+      icon: "📋",
+      title: "LLM response missing required fields",
+      hint: "Try a different model or retry",
+    };
+  }
+
+  if (msg.includes("spawn failed") || msg.includes("enoent")) {
+    return {
+      type: "spawn",
+      icon: "⚙️",
+      title: "Failed to run LLM script",
+      hint: "Check localLlmRunner.js exists",
+    };
+  }
+
+  return {
+    type: "unknown",
+    icon: "❓",
+    title: "Unexpected error occurred",
+    hint: `Details: ${err.message.slice(0, 40)}`,
+  };
+}
+
 // Interactive prompt for user input
 function askUser(question) {
   return new Promise((resolve) => {
@@ -159,104 +216,159 @@ async function showInteractiveMenu(review, reviewFile) {
   }
 }
 
-// Get commit message from args (passed by pre-commit hook)
-const commitMessage = process.argv[2] || "";
+// Parse arguments
+const args = process.argv.slice(2);
+const messageOnlyMode = args[0] === "--message-only";
+const commitMessage = messageOnlyMode ? args.slice(1).join(" ") : args[0] || "";
 
 let input = "";
 
-process.stdin.on("error", (err) => {
-  log(`error: failed to read diff - ${err.message}`);
-  process.exit(1);
-});
+// Message-only mode: just review the commit message
+if (messageOnlyMode) {
+  (async () => {
+    if (!commitMessage.trim()) {
+      process.exit(0);
+    }
 
-process.stdin.on("data", (chunk) => (input += chunk));
+    try {
+      const msgPrompt = buildMessageReviewPrompt(commitMessage);
+      const raw = await runLocalLLM(msgPrompt);
+      const feedback = extractMessageFeedback(raw);
 
-process.stdin.on("end", async () => {
-  input = input.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-
-  if (!input.trim()) {
-    log("nothing to review");
-    process.exit(0);
-  }
-
-  const size = Buffer.byteLength(input, "utf8");
-  if (size > MAX_DIFF_BYTES) {
-    log(`diff too large (${size}b > ${MAX_DIFF_BYTES}b) - split your commit`);
+      if (feedback && feedback.trim()) {
+        log(`💬 ${feedback}`);
+      }
+      process.exit(0);
+    } catch (err) {
+      // Don't block commit for message review failures
+      process.exit(0);
+    }
+  })();
+} else {
+  // Normal mode: review diff (and optionally message)
+  process.stdin.on("error", (err) => {
+    log(`error: failed to read diff - ${err.message}`);
     process.exit(1);
-  }
-
-  const metadata = extractDiffMetadata(input);
-  const config = loadConfig();
-
-  // Smart skip: if all files match skip patterns, skip review
-  if (shouldSkipReview(metadata.files || [], config.skipPatterns || [])) {
-    log("🔇 Skipped - docs/config only. Ship it!");
-    process.exit(0);
-  }
-
-  const prompt = buildJudgePromptV1({
-    metadataJson: JSON.stringify(metadata, null, 2),
-    diffText: input,
-    commitMessage: commitMessage,
   });
 
-  const spinner = createSpinner();
+  process.stdin.on("data", (chunk) => (input += chunk));
 
-  try {
-    const raw = await runLocalLLM(prompt);
-    const json = extractJson(raw);
-    const review = validate(JSON.parse(json));
+  process.stdin.on("end", async () => {
+    input = input.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
-    // Save full review
-    const output = {
-      timestamp: new Date().toISOString(),
-      files: metadata.files || [],
-      review,
-    };
-    fs.writeFileSync(
-      path.resolve(process.cwd(), REVIEW_FILE),
-      JSON.stringify(output, null, 2) + "\n"
-    );
-
-    spinner.stop(`🧙 Gandalf reviewed your code → ${REVIEW_FILE}`);
-
-    // Show message review feedback if any
-    if (review.messageReview && review.messageReview.trim()) {
-      log(`💬 ${review.messageReview}`);
-    }
-
-    if (review.risk === "LOW") {
-      log("✅ Ship it!");
+    if (!input.trim()) {
+      log("nothing to review");
       process.exit(0);
-    } else if (review.risk === "MEDIUM") {
-      log("⚠️  MEDIUM risk detected.");
-      if (isInteractive) {
-        const proceed = await showInteractiveMenu(review, REVIEW_FILE);
-        process.exit(proceed ? 0 : 1);
-      } else {
-        log("⚠️  Ok, but check the review.");
-        process.exit(0);
-      }
-    } else {
-      log("🚨 HIGH risk detected!");
-      if (isInteractive) {
-        const proceed = await showInteractiveMenu(review, REVIEW_FILE);
-        process.exit(proceed ? 0 : 1);
-      } else {
-        log("🚨 Blocked. Fix the issues first.");
-        process.exit(1);
-      }
     }
 
-    process.exit(0);
-  } catch (err) {
-    spinner.stop("✗ failed");
-    log(err.message);
-    process.exit(1);
-  }
-});
+    const size = Buffer.byteLength(input, "utf8");
+    if (size > MAX_DIFF_BYTES) {
+      log(`diff too large (${size}b > ${MAX_DIFF_BYTES}b) - split your commit`);
+      process.exit(1);
+    }
 
-process.stdin.resume();
+    const metadata = extractDiffMetadata(input);
+    const config = loadConfig();
+
+    // Smart skip: if all files match skip patterns, skip review
+    if (shouldSkipReview(metadata.files || [], config.skipPatterns || [])) {
+      log("🔇 Skipped - docs/config only. Ship it!");
+      process.exit(0);
+    }
+
+    const prompt = buildJudgePromptV1({
+      metadataJson: JSON.stringify(metadata, null, 2),
+      diffText: input,
+      commitMessage: commitMessage,
+    });
+
+    const spinner = createSpinner();
+
+    try {
+      const raw = await runLocalLLM(prompt);
+      const json = extractJson(raw);
+      const review = validate(JSON.parse(json));
+
+      // Save full review
+      const output = {
+        timestamp: new Date().toISOString(),
+        files: metadata.files || [],
+        review,
+      };
+      fs.writeFileSync(
+        path.resolve(process.cwd(), REVIEW_FILE),
+        JSON.stringify(output, null, 2) + "\n"
+      );
+
+      spinner.stop(`🧙 Gandalf reviewed your code → ${REVIEW_FILE}`);
+
+      // Show message review feedback if any
+      if (review.messageReview && review.messageReview.trim()) {
+        log(`💬 ${review.messageReview}`);
+      }
+
+      if (review.risk === "LOW") {
+        log("✅ Ship it!");
+        process.exit(0);
+      } else if (review.risk === "MEDIUM") {
+        log("⚠️  MEDIUM risk detected.");
+        if (isInteractive) {
+          const proceed = await showInteractiveMenu(review, REVIEW_FILE);
+          process.exit(proceed ? 0 : 1);
+        } else {
+          log("⚠️  Ok, but check the review.");
+          process.exit(0);
+        }
+      } else {
+        log("🚨 HIGH risk detected!");
+        if (isInteractive) {
+          const proceed = await showInteractiveMenu(review, REVIEW_FILE);
+          process.exit(proceed ? 0 : 1);
+        } else {
+          log("🚨 Blocked. Fix the issues first.");
+          process.exit(1);
+        }
+      }
+
+      process.exit(0);
+    } catch (err) {
+      spinner.stop("🧙 Gandalf couldn't complete the review");
+
+      // Provide user-friendly error messages
+      const errorType = classifyError(err);
+      log("");
+      log("┌─────────────────────────────────────────────────────┐");
+      log("│  ⚠️  Review unavailable                             │");
+      log("├─────────────────────────────────────────────────────┤");
+      log(`│  ${errorType.icon} ${errorType.title.padEnd(43)}│`);
+      log("├─────────────────────────────────────────────────────┤");
+      log(`│  ${errorType.hint.padEnd(49)}│`);
+      log("└─────────────────────────────────────────────────────┘");
+      log("");
+
+      // Save error to review file for debugging
+      const errorOutput = {
+        timestamp: new Date().toISOString(),
+        files: metadata.files || [],
+        error: {
+          type: errorType.type,
+          message: err.message,
+          hint: errorType.hint,
+        },
+      };
+      fs.writeFileSync(
+        path.resolve(process.cwd(), REVIEW_FILE),
+        JSON.stringify(errorOutput, null, 2) + "\n"
+      );
+
+      // Don't block commit on review failures - let it through with warning
+      log("✅ Proceeding without review (check LLM server)");
+      process.exit(0);
+    }
+  });
+
+  process.stdin.resume();
+}
 
 function runLocalLLM(prompt) {
   return new Promise((resolve, reject) => {
@@ -327,11 +439,15 @@ function validate(obj) {
   const required = ["risk", "issues", "summary"];
 
   for (const k of required) {
-    if (!(k in obj)) throw new Error(`missing: ${k}`);
+    if (!(k in obj)) {
+      throw new Error(`missing: ${k} (LLM didn't return required field)`);
+    }
   }
 
   if (!["LOW", "MEDIUM", "HIGH"].includes(obj.risk)) {
-    throw new Error("invalid risk");
+    throw new Error(
+      `invalid risk: got "${obj.risk}" (expected LOW, MEDIUM, or HIGH)`
+    );
   }
   if (!Array.isArray(obj.issues)) {
     throw new Error("issues must be array");
@@ -346,4 +462,47 @@ function validate(obj) {
     summary: obj.summary,
     messageReview: obj.messageReview || "",
   };
+}
+
+// Build prompt for message-only review
+function buildMessageReviewPrompt(message) {
+  return [
+    "ROLE: You are reviewing a git commit message for quality.",
+    "",
+    "TASK: Analyze the commit message and provide brief feedback if needed.",
+    "",
+    "GOOD commit messages:",
+    "- Descriptive, explains what and why",
+    "- Uses conventional format (feat:, fix:, docs:, etc.)",
+    "- Clear and specific",
+    "",
+    "BAD commit messages:",
+    "- Vague (fix stuff, update, wip)",
+    "- Too short with no context",
+    "- Typos or unclear language",
+    "",
+    "OUTPUT:",
+    "- If the message is good, respond with just: OK",
+    "- If the message needs improvement, respond with a single brief suggestion (one sentence)",
+    "- Do not use jokes or references",
+    "",
+    `COMMIT MESSAGE: "${message.trim()}"`,
+  ].join("\n");
+}
+
+// Extract feedback from message review response
+function extractMessageFeedback(raw) {
+  const text = String(raw || "").trim();
+
+  // Strip thinking tags
+  const cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+
+  // If response is just "OK" or similar, no feedback needed
+  if (/^ok$/i.test(cleaned) || /^(good|lgtm|looks good)/i.test(cleaned)) {
+    return "";
+  }
+
+  // Return the feedback (first line if multiline)
+  const firstLine = cleaned.split("\n")[0].trim();
+  return firstLine.length > 200 ? firstLine.slice(0, 200) + "..." : firstLine;
 }

@@ -32,7 +32,9 @@ It reads your **staged Git diff**, sends it to a **locally running LLM**, and de
    judgePrompt.v1.js
    ```
 
-2. Create the Git hook:
+2. Create the Git hooks:
+
+   **pre-commit** (reviews code):
 
    ```bash
    cat > .git/hooks/pre-commit << 'EOF'
@@ -41,19 +43,34 @@ It reads your **staged Git diff**, sends it to a **locally running LLM**, and de
    if [ -z "$DIFF" ]; then
      exit 0
    fi
-   COMMIT_MSG=""
-   if [ -f ".git/COMMIT_EDITMSG" ]; then
-     COMMIT_MSG="$(cat .git/COMMIT_EDITMSG)"
-   fi
-   echo "$DIFF" | node gitgandalf.js "$COMMIT_MSG"
+   echo "$DIFF" | node gitgandalf.js
    exit $?
    EOF
    ```
 
-3. Make it executable:
+   **commit-msg** (reviews message):
 
    ```bash
-   chmod +x .git/hooks/pre-commit
+   cat > .git/hooks/commit-msg << 'EOF'
+   #!/bin/sh
+   COMMIT_MSG_FILE="$1"
+   if [ ! -f "$COMMIT_MSG_FILE" ]; then
+     exit 0
+   fi
+   COMMIT_MSG="$(cat "$COMMIT_MSG_FILE")"
+   CLEAN_MSG="$(echo "$COMMIT_MSG" | grep -v '^#' | tr -d '[:space:]')"
+   if [ -z "$CLEAN_MSG" ]; then
+     exit 0
+   fi
+   node gitgandalf.js --message-only "$COMMIT_MSG"
+   exit $?
+   EOF
+   ```
+
+3. Make them executable:
+
+   ```bash
+   chmod +x .git/hooks/pre-commit .git/hooks/commit-msg
    ```
 
 4. Done. Try a commit.
