@@ -8,6 +8,36 @@ const { buildJudgePromptV1 } = require("./judgePrompt.v1");
 
 const MAX_DIFF_BYTES = 50_000;
 const REVIEW_FILE = ".gandalf-review.json";
+const CONFIG_FILE = ".gandalfrc.json";
+
+// Load config
+function loadConfig() {
+  try {
+    const configPath = path.resolve(process.cwd(), CONFIG_FILE);
+    if (fs.existsSync(configPath)) {
+      return JSON.parse(fs.readFileSync(configPath, "utf8"));
+    }
+  } catch (e) {
+    // ignore config errors, use defaults
+  }
+  return { skipPatterns: [] };
+}
+
+// Check if filename matches a glob pattern (simple glob: *.ext)
+function matchesPattern(filename, pattern) {
+  if (pattern.startsWith("*.")) {
+    return filename.endsWith(pattern.slice(1));
+  }
+  return filename === pattern || filename.endsWith("/" + pattern);
+}
+
+// Check if all files should be skipped
+function shouldSkipReview(files, skipPatterns) {
+  if (!files.length || !skipPatterns.length) return false;
+  return files.every((file) =>
+    skipPatterns.some((pattern) => matchesPattern(file, pattern))
+  );
+}
 
 // Detect interactive terminal vs CI
 const isTTY = process.stderr.isTTY;
@@ -57,6 +87,9 @@ function log(msg) {
   process.stderr.write(msg + "\n");
 }
 
+// Get commit message from args (passed by pre-commit hook)
+const commitMessage = process.argv[2] || "";
+
 let input = "";
 
 process.stdin.on("error", (err) => {
@@ -81,9 +114,18 @@ process.stdin.on("end", async () => {
   }
 
   const metadata = extractDiffMetadata(input);
+  const config = loadConfig();
+
+  // Smart skip: if all files match skip patterns, skip review
+  if (shouldSkipReview(metadata.files || [], config.skipPatterns || [])) {
+    log("🔇 Skipped - docs/config only. Ship it!");
+    process.exit(0);
+  }
+
   const prompt = buildJudgePromptV1({
     metadataJson: JSON.stringify(metadata, null, 2),
     diffText: input,
+    commitMessage: commitMessage,
   });
 
   const spinner = createSpinner();
@@ -105,6 +147,11 @@ process.stdin.on("end", async () => {
     );
 
     spinner.stop(`🧙 Gandalf reviewed your code → ${REVIEW_FILE}`);
+
+    // Show message review feedback if any
+    if (review.messageReview && review.messageReview.trim()) {
+      log(`💬 ${review.messageReview}`);
+    }
 
     if (review.risk === "LOW") {
       log("✅ Ship it!");
@@ -207,5 +254,10 @@ function validate(obj) {
     throw new Error("summary must be string");
   }
 
-  return { risk: obj.risk, issues: obj.issues, summary: obj.summary };
+  return {
+    risk: obj.risk,
+    issues: obj.issues,
+    summary: obj.summary,
+    messageReview: obj.messageReview || "",
+  };
 }

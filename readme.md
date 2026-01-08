@@ -41,7 +41,11 @@ It reads your **staged Git diff**, sends it to a **locally running LLM**, and de
    if [ -z "$DIFF" ]; then
      exit 0
    fi
-   echo "$DIFF" | node gitgandalf.js
+   COMMIT_MSG=""
+   if [ -f ".git/COMMIT_EDITMSG" ]; then
+     COMMIT_MSG="$(cat .git/COMMIT_EDITMSG)"
+   fi
+   echo "$DIFF" | node gitgandalf.js "$COMMIT_MSG"
    exit $?
    EOF
    ```
@@ -83,9 +87,35 @@ git commit --no-verify -m "hotfix"
 
 ---
 
-## Limitations
+## Features
 
-- Requires LLM server running locally (no server = no commit)
-- Max diff size: 50KB (split large commits)
-- Review quality depends on your model
-- No Windows testing yet
+### 🔇 Smart Skips
+
+Docs-only or config-only commits skip review automatically:
+
+```
+🔇 Skipped - docs/config only. Ship it!
+```
+
+Configure skip patterns in `.gandalfrc.json`:
+
+```json
+{
+  "skipPatterns": ["*.md", "package-lock.json", "yarn.lock", "*.txt"]
+}
+```
+
+### 💬 Commit Message Review
+
+Gandalf also reviews your commit message:
+
+```
+🧙 Gandalf reviewed your code → .gandalf-review.json
+💬 "fix stuff" lacks clarity, young hobbit. Describe what you fixed!
+✅ Ship it!
+```
+
+Good messages: descriptive, explains what and why.
+Bad messages: vague (`fix`, `update`, `wip`), too short, no context.
+
+---
